@@ -1,7 +1,7 @@
 // Copyright 2026 FNG. Use, modification and redistribution are permitted under the conditions in LICENSE:
 // credit the source, and visibly link to the site or repository if you use its outputs in a user-facing application.
 // Recipe rendering shared by the custom search (app.js) and the prepared builds (builds.js).
-import { statName, statAbbr, isSecondary, RANGE_STEMS, fmtValue, materials, MATERIAL_ICONS, MATERIAL_GROUPS, SLOT_NAMES } from "./stats.js?v=5e8c7aa104";
+import { statName, statAbbr, isSecondary, RANGE_STEMS, fmtValue, materials, MATERIAL_ICONS, MATERIAL_GROUPS, SLOT_NAMES } from "./stats.js?v=e3aa7e26b0";
 
 const slotName = (s) => SLOT_NAMES[s] || s;
 
@@ -101,7 +101,9 @@ export function stepsHtml(h, missing, wantStems, heroes) {
   if (missing.length) {
     // a search result names the lines the Mystic may swap and, when another class must enchant, the hero
     const legal = (h.mystic || []).filter((s) => !wantStems.has(s) && !RANGE_STEMS.has(s));
-    const by = heroes && h.mystic_class !== undefined && h.mystic_class !== heroes.cls ? ` <b>as ${heroes.name(h.mystic_class)}</b>` : "";
+    // compared with the hero holding the item after the last cube step (the creator when nothing was handed over)
+    const holder = who.length ? who[who.length - 1] : heroes && heroes.cls;
+    const by = heroes && h.mystic_class !== undefined && (h.mystic_class !== holder || switched) ? ` <b>as ${heroes.name(h.mystic_class)}</b>` : "";
     out.push(legal.length && missing.length === 1
       ? `Mystic${by}: ${legal.map((s) => statName(s)).join(" or ")} &rarr; ${statName(missing[0])}`
       : `Mystic: roll ${missing.map((m) => statName(m)).join(" or ")}`);
@@ -158,7 +160,8 @@ export function parseRequestHash(hash) {
     req: {
       c, i, w, p: p.length === 4 && p.every((x) => +x > 0) ? p : DEFAULT_PRICES.slice(), f: num("f") ?? 75, n: Math.max(1, num("n") || 1),
       x: [...new Set((q.get("x") || "").split(",").filter((v) => /^[0-6]$/.test(v)).map(Number))].filter((v) => v !== c),
-      xs: num("xs") !== null && num("xs") >= 0 ? q.get("xs") : DEFAULT_SWITCH,
+      // a finite cost the engine can take in hundredths (a crafted `xs=Infinity` would reach it as null)
+      xs: Number.isFinite(num("xs")) && num("xs") >= 0 && num("xs") * 100 <= Number.MAX_SAFE_INTEGER ? q.get("xs") : DEFAULT_SWITCH,
     },
     season: Math.max(1, Math.round(num("s") || 40)), hc: q.get("m") === "hc",
   };

@@ -1,7 +1,7 @@
 // Copyright 2026 FNG. Use, modification and redistribution are permitted under the conditions in LICENSE:
 // credit the source, and visibly link to the site or repository if you use its outputs in a user-facing application.
-import { statName, statAbbr, isSecondary, RANGE_STEMS, WEAPON_SLOTS, fmtValue, isPct, HIDDEN, CLASS_NAMES, SLOT_NAMES, materials } from "./stats.js?v=5e8c7aa104";
-import { slotPlural, matsHtml, stepsHtml, mysticCanFinish, tooltipRows, requestHash, parseRequestHash, savedList, savedHas, savedToggle, savedRemove } from "./recipe.js?v=5e8c7aa104";
+import { statName, statAbbr, isSecondary, RANGE_STEMS, WEAPON_SLOTS, fmtValue, isPct, HIDDEN, CLASS_NAMES, SLOT_NAMES, materials } from "./stats.js?v=e3aa7e26b0";
+import { slotPlural, matsHtml, stepsHtml, mysticCanFinish, tooltipRows, requestHash, parseRequestHash, savedList, savedHas, savedToggle, savedRemove } from "./recipe.js?v=e3aa7e26b0";
 
 const $ = (id) => document.getElementById(id);
 // Forward the cache-busting version index.html stamped onto our own src= down to the worker, which forwards it
@@ -158,6 +158,7 @@ function start() {
   $("cls").innerHTML = info.classes.map((c, i) => `<option value="${i}">${className(c)}</option>`).join("");
   $("cls").addEventListener("change", loadStems);
   $("heroes").innerHTML = info.classes.map((c, i) => `<label class="small"><input type="checkbox" data-c="${i}"> ${className(c)}</label>`).join("");
+  $("heroes").addEventListener("change", loadStems);
   itemList = info.items;
   combo($("itemFind"), $("itemPick"), itemSource, "No matching item", pickItem);
   combo($("find"), $("pick"), statSource, "No matching stat on this item", (stem) => { wants.push({ stem, min: "" }); renderChips(); });
@@ -210,13 +211,21 @@ function stemsFor(ci, slot, item) {
   });
 }
 
+let stemsGen = 0;   // overlapping loads (a hero ticked, then unticked) commit only the newest
 async function loadStems() {
+  const gen = ++stemsGen;
   const ci = +$("cls").value;
   const all = new Map();
   if (pickedItem) {
-    const st = await stemsFor(ci, pickedItem.slot, pickedItem.id);
-    for (const k of Object.keys(st)) if (!HIDDEN.test(k)) all.set(k, statName(k));
+    // what the item can roll for its own class and for every hero allowed under Switch heroes (one of them may roll or
+    // enchant a stat the item's class never gets, e.g. Lightning damage on a Necromancer's amulet)
+    const classes = [ci, ...[...$("heroes").querySelectorAll("input:checked")].map((el) => +el.dataset.c).filter((c) => c !== ci)];
+    for (const c of classes) {
+      const st = await stemsFor(c, pickedItem.slot, pickedItem.id);
+      for (const k of Object.keys(st)) if (!HIDDEN.test(k)) all.set(k, statName(k));
+    }
   }
+  if (gen !== stemsGen) return;
   stemList = [...all.entries()].map(([stem, name]) => ({ stem, name })).sort((a, b) => a.name.localeCompare(b.name));
   wants = wants.filter((w) => all.has(w.stem));
   renderChips();
@@ -249,7 +258,7 @@ function readRequest() {
     p: ["cc", "ch", "cr", "cp"].map((id) => $(id).value), f: num("floor"), n: Math.max(1, Math.round(+$("top").value || 1)),
     // heroes of other classes allowed to do cube steps, and the cost of each hand-over (the item's own class never counts)
     x: [...$("heroes").querySelectorAll("input:checked")].map((el) => +el.dataset.c).filter((c) => c !== +$("cls").value),
-    xs: $("cs").value,
+    xs: String(Math.max(0, +$("cs").value || 0)),   // an empty cost searches as 0, so the link says 0
   };
 }
 const contextNow = () => ({ season: Math.max(1, Math.round(+$("season").value || 40)), hc: $("hc").value === "1" });
@@ -344,6 +353,7 @@ function go() {
       $("status").textContent = r.stopped ? "Stopped at the time limit — showing the best found so far. A longer time limit may find more." : note;
       $("out").innerHTML = resultsHtml(r, true);
       showActions();
+      dropStale();   // the season or mode changed while this search ran: its results answer the old ones
     },
     () => { $("go").disabled = false; });
 }
