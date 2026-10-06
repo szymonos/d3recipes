@@ -198,9 +198,11 @@ pub struct Hit {
     /// indices of the wants that appear on the tooltip
     pub matched: Vec<usize>,
     pub lines: Vec<LineOut>,
-    /// on a recipe one wanted stat short: the stems of the lines the Mystic may swap for that stat (the roll rules: affix groups,
-    /// exclusion keys, budget); empty when none can
+    /// on a recipe one wanted stat short: the stems of the spare lines the Mystic may swap for that stat (the roll rules: affix
+    /// groups, exclusion keys, budget; the same kind, from the data); never empty on a `near` hit asking for stat families
     pub mystic: Vec<String>,
+    /// the class of the hero who enchants at the Mystic: the query's own when its class can roll the stat, else one from `switch`
+    pub mystic_class: usize,
     /// every step of the route, root first (only with `Query::trail`)
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub trail: Vec<Checkpoint>,
@@ -507,7 +509,7 @@ impl Search {
             !self.wants_lc.iter().any(|w| w.1.contains(&s)) && !keep.contains(&s) && !RANGE_STEMS.iter().any(|r| r.to_lowercase() == s) && s != "indestructible"
         };
         let ok: Vec<bool> = aff.iter().map(|&a| spare(&self.d.affixes[a].stem)).collect();
-        self.sim.mystic_swaps(item, aff, &missing[0], true).into_iter().any(|p| ok[p])
+        self.sim.mystic_swaps(item, aff, &missing[0], true, self.q.class).into_iter().any(|p| ok[p])
     }
 
     fn matched(&self, lines: &[LineOut]) -> Vec<usize> {
@@ -566,20 +568,32 @@ impl Search {
         let qual_ok = self.quality_ok(q);
         let nw = self.wants_lc.len();
         let is_full = qual_ok && matched.len() >= self.min_match && (!self.q.mystic_finish || self.mystic_can_finish(item, aff, &lines, &matched));
-        let is_near = qual_ok && nw > 0 && matched.len() + 1 == self.min_match;
+        let mut is_near = qual_ok && nw > 0 && matched.len() + 1 == self.min_match;
+        // a recipe one stat short: the spare lines (not wanted, not the weapon damage range) the Mystic may legally swap for the
+        // missing stat, of the same kind, at the first hero whose class can roll it (the query's own, then `switch`). With none,
+        // it is no recipe one short at all, so it cannot end the search (`end_on_near`) ahead of one the Mystic can finish.
+        let (mut mystic, mut mystic_class) = (Vec::new(), self.q.class);
+        if let Some(w) = (0..nw).find(|w| is_near && !matched.contains(w) && !self.wants_lc[*w].1.is_empty()) {
+            let fams = self.wants_lc[w].1.clone();
+            let spare = |stem: &String| {
+                let s = stem.to_lowercase();
+                !self.wants_lc.iter().any(|w| w.1.contains(&s)) && !RANGE_STEMS.iter().any(|r| r.to_lowercase() == s) && s != "indestructible"
+            };
+            for c in self.heroes.clone() {
+                let lines: Vec<String> =
+                    self.sim.mystic_swaps(item, aff, &fams, true, c).into_iter().map(|p| self.d.affixes[aff[p]].stem.clone()).filter(|s| spare(s)).collect();
+                if !lines.is_empty() {
+                    (mystic, mystic_class) = (lines, c);
+                    break;
+                }
+            }
+            is_near = !mystic.is_empty();
+        }
         let notable_min = self.min_match.saturating_sub(1).max(1);
         let is_notable = !is_full && !is_near && (q == Q::Primal || q == Q::Ancient) && nw > 0 && matched.len() >= notable_min;
         if !(is_full || is_near || is_notable) {
             return;
         }
-        // a recipe one stat short: which lines the Mystic may legally swap for the missing stat
-        let mystic = match (is_near, (0..self.wants_lc.len()).find(|w| !matched.contains(w))) {
-            (true, Some(w)) if !self.wants_lc[w].1.is_empty() => {
-                let fams = self.wants_lc[w].1.clone();
-                self.sim.mystic_swaps(item, aff, &fams, false).into_iter().map(|p| self.d.affixes[aff[p]].stem.clone()).collect()
-            }
-            _ => Vec::new(),
-        };
         let (route, route_class, slot, n, root_item) = self.route_of(idx);
         let node = &self.nodes[idx as usize];
         let hit = Hit {
@@ -597,6 +611,7 @@ impl Search {
             matched,
             lines,
             mystic,
+            mystic_class,
             trail: Vec::new(),
             checkpoints: Vec::new(),
             idx,

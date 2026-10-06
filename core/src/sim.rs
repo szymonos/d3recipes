@@ -317,9 +317,13 @@ impl Sim {
     /// Mystic: positions in `aff` whose line can be swapped for a stat of one of `fams` (stems, lower case) by the same rules a roll
     /// obeys: some affix of that stat that this item can roll must pass `excluded` and `fits` against the item's other lines.
     /// `same_kind`: the new stat must also be the same kind (primary / secondary, from the data) as the line it replaces.
-    pub fn mystic_swaps(&mut self, item_idx: usize, aff: &[usize], fams: &[String], same_kind: bool) -> Vec<usize> {
+    /// `cls`: the class of the hero at the Mystic, which offers what that class can roll (a Necromancer never gets Lightning damage).
+    pub fn mystic_swaps(&mut self, item_idx: usize, aff: &[usize], fams: &[String], same_kind: bool, cls: usize) -> Vec<usize> {
+        let hero = self.hero;
+        self.hero = cls;
         let targets: Vec<usize> =
             self.candidate_affixes(item_idx).into_iter().filter(|&t| fams.iter().any(|f| self.d.affixes[t].stem.to_lowercase() == *f)).collect();
+        self.hero = hero;
         let mut out = Vec::new();
         let mut rest = Vec::with_capacity(aff.len());
         for pos in 0..aff.len() {

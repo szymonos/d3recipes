@@ -107,7 +107,8 @@ fn item_search_only_returns_the_item() {
 /// The Mystic swaps a line under the same rules a roll obeys. Reported in issue #3: Crusader, Vigilante Belt, Str / Vit / All Res,
 /// season 40 softcore, page defaults: 38 belts + 3 Reforges lands Str, Vit, CDR, Justice and Lightning Resistance, and the page
 /// offered "Mystic: roll All Resistance". All Res shares an affix group with the single resistances, so swapping any other line
-/// leaves Lightning Res in the way, and Lightning Res itself is a secondary.
+/// leaves Lightning Res in the way, and Lightning Res itself is a secondary. That recipe is no "finish at the Mystic" result at
+/// all, so it no longer ends the search (`end_on_near`) ahead of the ones the Mystic can finish.
 #[test]
 fn mystic_respects_affix_conflicts() {
     let d = data();
@@ -121,7 +122,7 @@ fn mystic_respects_affix_conflicts() {
     }))
     .unwrap();
     let r = run_query(d, q, 10_000);
-    let mut seen = false;
+    assert!(!r.near.is_empty());
     for h in &r.near {
         let stems: Vec<&str> = h.lines.iter().map(|l| l.stem.as_str()).collect();
         println!("hope {} route {:?} lines {:?} mystic {:?}", h.hope, h.route, stems, h.mystic);
@@ -130,9 +131,7 @@ fn mystic_respects_affix_conflicts() {
         if stems.iter().any(|s| s.ends_with("Resist") && *s != "ResistAll") {
             assert!(h.mystic.iter().all(|s| s.ends_with("Resist")), "a single resistance blocks All Res, yet {:?} were offered", h.mystic);
         }
-        if h.hope == 38 && h.route == vec![('R', 3)] {
-            seen = true;
-        }
+        assert!(!(h.hope == 38 && h.route == vec![('R', 3)]), "the reported recipe (38 belts, 3 Reforges) is offered for the Mystic");
+        assert!(!h.mystic.is_empty(), "a near result the Mystic cannot finish");
     }
-    assert!(seen, "the reported recipe (38 belts, 3 Reforges) was not among the near results");
 }

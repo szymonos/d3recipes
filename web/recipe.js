@@ -72,6 +72,9 @@ export function stopOn(cp, prev) {
 export function mysticCanFinish(h, missing, wantStems) {
   const legal = new Set(h.mystic || []);
   const spare = h.lines.filter((l) => l.stem !== "item power" && l.stem !== "Indestructible" && !RANGE_STEMS.has(l.stem) && !wantStems.has(l.stem) && legal.has(l.stem));
+  // the engine has already checked the kind from the game data (`mystic_class` marks such a result): Crowd Control Reduction is a
+  // secondary there, whatever isSecondary says
+  if (h.mystic_class !== undefined) return spare.length > 0;
   const sec = spare.filter((l) => isSecondary(l.stem)).length;
   const need = { sec: missing.filter((m) => isSecondary(m)).length, pri: missing.filter((m) => !isSecondary(m)).length };
   return spare.length - sec >= need.pri && sec >= need.sec;
@@ -96,7 +99,12 @@ export function stepsHtml(h, missing, wantStems, heroes) {
     out.push((OP_TEXT[op] || (() => op))(n) + (switched ? as(who[k]) : "") + note);
   });
   if (missing.length) {
-    out.push(`Mystic: roll ${missing.map((m) => statName(m)).join(" or ")}`);
+    // a search result names the lines the Mystic may swap and, when another class must enchant, the hero
+    const legal = (h.mystic || []).filter((s) => !wantStems.has(s) && !RANGE_STEMS.has(s));
+    const by = heroes && h.mystic_class !== undefined && h.mystic_class !== heroes.cls ? ` <b>as ${heroes.name(h.mystic_class)}</b>` : "";
+    out.push(legal.length && missing.length === 1
+      ? `Mystic${by}: ${legal.map((s) => statName(s)).join(" or ")} &rarr; ${statName(missing[0])}`
+      : `Mystic: roll ${missing.map((m) => statName(m)).join(" or ")}`);
   }
   return `<ul class="steps">${out.map((s) => `<li>${s}</li>`).join("")}</ul>`;
 }
