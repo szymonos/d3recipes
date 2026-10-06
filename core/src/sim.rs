@@ -179,11 +179,13 @@ pub struct Sim {
     ban_sockets: bool,
     base: HashMap<(usize, usize, bool), Rc<BaseElig>>,
     twins: HashMap<usize, [usize; 7]>,
+    /// a primal item other than a weapon is being rolled: if it can have a socket, its first primary pick lands it (see `picks`)
+    force_socket: bool,
 }
 
 impl Sim {
     pub fn new(d: Rc<Data>, hero: usize, eligible: bool) -> Sim {
-        Sim { d, hero, eligible, ilvl: 70, quality: 9, cls: hero, ban_sockets: false, base: HashMap::new(), twins: HashMap::new() }
+        Sim { d, hero, eligible, ilvl: 70, quality: 9, cls: hero, ban_sockets: false, base: HashMap::new(), twins: HashMap::new(), force_socket: false }
     }
 
     fn set_class(&mut self, it: &Item) {
@@ -410,6 +412,21 @@ impl Sim {
         kinds.extend(std::iter::repeat(None).take(c));
         kinds.truncate(n);
         let mut cands: Vec<usize> = Vec::with_capacity(256);
+        // A primal item that can have sockets always has all of them (played: a Squirt's Necklace, crafted and natural
+        // primal; weapons are the exception, see `ban_sockets`). The first primary pick still makes its draw, but what it
+        // lands is the item's highest socket affix, past the affix budget; the later picks then see it on the item.
+        // Nothing changes when a fixed slot already gave a socket, or when the item has no primary pick at all (Ring of the
+        // Zodiac, whose primaries are all fixed, never has one).
+        let mut socket = None;
+        if self.force_socket && !existing.iter().any(|&e| d.affixes[e].socket) {
+            socket = (0..d.affixes.len())
+                .filter(|&ai| {
+                    // by the item's own types, never the wildcard (which every socket affix lists, gloves included)
+                    let a = &d.affixes[ai];
+                    a.socket && !a.legacy_socket && a.kind == 0 && a.tier <= self.ilvl && fits(item, a.types.as_slice(), false)
+                })
+                .max_by_key(|&ai| d.affixes[ai].tier);
+        }
         for kind in kinds {
             cands.clear();
             for &ai in base.list.iter() {
@@ -434,6 +451,12 @@ impl Sim {
                 if v < acc {
                     pick = x;
                     break;
+                }
+            }
+            if kind == Some(0) {
+                if let Some(sk) = socket.take() {
+                    existing.push(sk);
+                    continue;
                 }
             }
             let fin = if converge {
@@ -493,13 +516,16 @@ impl Sim {
         let unresolved = self.fixed_slots(item, &mut rng, swaps, &mut existing);
         rng.draw(); // discarded draw (legendary)
         let lead = if weapon_primal { unresolved } else { 0 };
+        self.force_socket = primal && !item.weapon;
         self.picks(item_idx, &mut rng, swaps, false, lead, &mut existing);
+        self.force_socket = false;
         self.ban_sockets = false;
         Reforged { affixes: existing, child_seed: rng.lo(), ancient, primal }
     }
 
     /// Affixes of a Hope of Cain item (reforge.py Sim.drop): the builder on the full 64-bit chain state.
-    pub fn drop_item(&mut self, item_idx: usize, x0: u64, ancient: bool) -> Vec<usize> {
+    /// `ancient` is true for an ancient or primal drop; `primal` for a primal one (which gets all its sockets).
+    pub fn drop_item(&mut self, item_idx: usize, x0: u64, ancient: bool, primal: bool) -> Vec<usize> {
         let d = self.d.clone();
         let item = &d.items[item_idx];
         self.set_class(item);
@@ -508,7 +534,9 @@ impl Sim {
         let mut existing = Vec::with_capacity(6);
         self.fixed_slots(item, &mut rng, swaps, &mut existing);
         rng.draw();
+        self.force_socket = primal && !item.weapon;
         self.picks(item_idx, &mut rng, swaps, false, 0, &mut existing);
+        self.force_socket = false;
         existing
     }
 
@@ -546,7 +574,7 @@ impl Sim {
             }
         }
         let x0_lo = x0 as u32;
-        let affixes = self.drop_item(target, x0, false);
+        let affixes = self.drop_item(target, x0, false, false);
         Converted { target, affixes, child_seed: x0_lo }
     }
 
@@ -562,7 +590,9 @@ impl Sim {
         let unresolved = self.fixed_slots(item, &mut rng, 2, &mut existing);
         rng.draw(); // one extra draw before the picks
         let lead = if item.weapon { unresolved } else { 0 };
+        self.force_socket = !item.weapon;
         self.picks(item_idx, &mut rng, 2, true, lead, &mut existing);
+        self.force_socket = false;
         self.ban_sockets = false;
         (existing, rng.lo())
     }

@@ -424,7 +424,7 @@ impl Search {
             self.nodes.push(NodeRec { item: r.item as u32, seed: r.seed, q, pc: 0, cc: 0, depth: 0, parent: u32::MAX, op: b'H', cls: self.q.class as u8, slot: name_idx, n: r.n as u16 });
             self.root_x0.insert(idx, r.x0);
             if self.need_lines(q) {
-                let aff = self.sim.drop_item(r.item, r.x0, r.ancient || r.primal);
+                let aff = self.sim.drop_item(r.item, r.x0, r.ancient || r.primal, r.primal);
                 let lines = if r.primal { self.sim.values_max(r.item, &aff) } else { self.sim.values(r.item, r.seed, &aff) };
                 self.register(idx, cost, q, r.item, &aff, lines);
             }
@@ -778,7 +778,7 @@ impl Search {
             self.sim.hero = cls;
             let (aff, raw) = if k == 0 {
                 let x0 = self.root_x0[&path[k]];
-                let aff = self.sim.drop_item(item, x0, q != Q::Normal);
+                let aff = self.sim.drop_item(item, x0, q != Q::Normal, q == Q::Primal);
                 let raw = if q == Q::Primal { self.sim.values_max(item, &aff) } else { self.sim.values(item, seed, &aff) };
                 (aff, raw)
             } else {

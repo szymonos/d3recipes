@@ -31,6 +31,19 @@ fn same(a: &[f64], b: &[f64]) -> bool {
     a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x == y || (x.is_nan() && y.is_nan()))
 }
 
+/// The one place the Rust port knowingly differs from the Python vectors: a primal item other than a weapon that can have
+/// sockets always has them, landed by its first primary pick (played in the game; see Sim::picks). The Python model left
+/// many without, or rolled them on a later pick, so the picks after the first differ. Where such an item does not match,
+/// only the draws can still be compared: the child seed (and ancient/primal) must match, and the result must carry the
+/// socket. Every other case must match exactly.
+fn socket_rule(d: &Data, item: usize) -> bool {
+    !d.items[item].weapon && d.items[item].na > 0
+}
+
+fn has_socket(d: &Data, a: &[usize]) -> bool {
+    a.iter().any(|&i| d.affixes[i].socket)
+}
+
 #[test]
 fn chains() {
     let (d, g) = load();
@@ -56,6 +69,7 @@ fn chains() {
 #[test]
 fn reforges() {
     let (d, g) = load();
+    let mut ruled = 0;
     let mut fails = 0;
     let mut n = 0;
     for e in g["reforge"].as_array().unwrap() {
@@ -64,8 +78,14 @@ fn reforges() {
         let item = d.item_by_id[&(u(&e["item"]) as u32)];
         let r = sim.reforge(item, u(&e["seed"]) as u32);
         let want_aff: Vec<u64> = e["affixes"].as_array().unwrap().iter().map(u).collect();
-        let mut ok = ids(&d, &r.affixes) == want_aff && r.child_seed as u64 == u(&e["child"]) && r.ancient == e["ancient"].as_bool().unwrap()
-            && r.primal == e["primal"].as_bool().unwrap();
+        let draws = r.child_seed as u64 == u(&e["child"]) && r.ancient == e["ancient"].as_bool().unwrap() && r.primal == e["primal"].as_bool().unwrap();
+        if r.primal && socket_rule(&d, item) && ids(&d, &r.affixes) != want_aff {
+            assert!(draws && has_socket(&d, &r.affixes), "socket rule: reforge item {:08x} seed {:08x}", u(&e["item"]), u(&e["seed"]));
+            ruled += 1;
+            n += 1;
+            continue;
+        }
+        let mut ok = ids(&d, &r.affixes) == want_aff && draws;
         if ok {
             let lines: Vec<f64> = if r.primal {
                 sim.values_max(item, &r.affixes).iter().map(|l| l.value).collect()
@@ -86,7 +106,7 @@ fn reforges() {
         }
         n += 1;
     }
-    println!("reforges checked: {}, mismatches {}", n, fails);
+    println!("reforges checked: {}, mismatches {}, socket rule {}", n, fails, ruled);
     assert_eq!(fails, 0);
 }
 
@@ -100,7 +120,7 @@ fn drops() {
         let mut sim = Sim::new(d.clone(), cls, true);
         let item = d.item_by_id[&(u(&e["item"]) as u32)];
         let x0 = u(&e["x0"]);
-        let ex = sim.drop_item(item, x0, e["ancient"].as_bool().unwrap());
+        let ex = sim.drop_item(item, x0, e["ancient"].as_bool().unwrap(), false);
         let want: Vec<u64> = e["affixes"].as_array().unwrap().iter().map(u).collect();
         let lines: Vec<f64> = sim.values(item, x0 as u32, &ex).iter().map(|l| l.value).collect();
         if ids(&d, &ex) != want || !same(&lines, &vals(&e["values"])) {
@@ -150,6 +170,7 @@ fn converts() {
 #[test]
 fn primalizes() {
     let (d, g) = load();
+    let mut ruled = 0;
     let mut fails = 0;
     let mut n = 0;
     for e in g["primalize"].as_array().unwrap() {
@@ -158,6 +179,12 @@ fn primalizes() {
         let item = d.item_by_id[&(u(&e["item"]) as u32)];
         let (ex, child) = sim.primalize(item, u(&e["seed"]) as u32);
         let want: Vec<u64> = e["affixes"].as_array().unwrap().iter().map(u).collect();
+        if socket_rule(&d, item) && ids(&d, &ex) != want {
+            assert!(child as u64 == u(&e["child"]) && has_socket(&d, &ex), "socket rule: primalize item {:08x} seed {:08x}", u(&e["item"]), u(&e["seed"]));
+            ruled += 1;
+            n += 1;
+            continue;
+        }
         let lines: Vec<f64> = sim.values_max(item, &ex).iter().map(|l| l.value).collect();
         if ids(&d, &ex) != want || child as u64 != u(&e["child"]) || !same(&lines, &vals(&e["values_max"])) {
             fails += 1;
@@ -167,6 +194,6 @@ fn primalizes() {
         }
         n += 1;
     }
-    println!("primalizes checked: {}, mismatches {}", n, fails);
+    println!("primalizes checked: {}, mismatches {}, socket rule {}", n, fails, ruled);
     assert_eq!(fails, 0);
 }
