@@ -343,6 +343,17 @@ function go() {
     () => { $("go").disabled = false; });
 }
 
+// results on screen answer one season and mode; once either changes they no longer apply, so drop them
+function dropStale() {
+  const { season, hc } = contextNow();
+  if (!last || (last.season === season && last.hc === hc) || $("go").disabled) return;
+  $("out").innerHTML = "";
+  $("actions").hidden = true;
+  $("status").textContent = `Season or mode changed: search again for Season ${season} · ${hc ? "Hardcore" : "Softcore"}.`;
+}
+$("season").addEventListener("input", dropStale);
+$("hc").addEventListener("change", dropStale);
+
 const labelOf = (item, req) => `${item.name} · ${req.w.map(([s]) => statAbbr(s)).join(", ") || "any roll"}`;
 
 function showActions() {
