@@ -76,6 +76,7 @@ Serve locally: `python -m http.server 8765 -d web` and open `http://localhost:87
 - The prepared builds' Mystic steps follow the game's rules: the Mystic replaces a line ranked below the stat it adds, never the weapon damage range, and never in a way the item can't roll. The few recipes that relied on an impossible Mystic step changed, and a row whose item has no room for its Mystic stat now says so.
 - "Before you start" now mentions unlocking primals first: a solo Greater Rift 70 on another hero of the same season and mode.
 - Changing the season or mode now clears custom search results already on screen, which were for the old season and mode; search again to see the new ones.
+- Custom search can hand the item to heroes of other classes between cube steps (**Switch heroes**). The item keeps its seed from hero to hero; the hero's class changes what an item of no class rolls, and a Reforge by a hero of another class than a class item's takes one extra draw. Each step then says which hero does it. **Switch hero** sets what one hand-over costs, so routes do not switch for nothing. Confirmed in game on a class item (a Crusader's Vigilante Belt, six hand-overs); hand-overs on items of no class, where the class changes the affix weights, are not confirmed yet.
 
 **2026-10-05**
 

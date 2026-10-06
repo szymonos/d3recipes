@@ -277,6 +277,14 @@
           <div><label for="secs">Time limit (s)</label><input id="secs" type="number" min="1" max="120" value="15"></div>
         </div>
       </details>
+      <details style="margin-top:10px">
+        <summary>Switch heroes</summary>
+        <p class="small" style="margin:10px 0 0">Let heroes of other classes do some of the cube steps. The item keeps its seed when you hand it over; the hero's class changes what it rolls. The item is always created by the class chosen above.</p>
+        <div id="heroes" class="opts"></div>
+        <div class="opts">
+          <div><label for="cs" title="Relative cost of handing the item to a hero of another class, in the same units as the costs above. Higher means fewer switches.">Switch hero</label><input id="cs" type="number" min="0" step="any" value="1"></div>
+        </div>
+      </details>
     </section>
 
     <button id="go" class="go">Find Recipes</button>

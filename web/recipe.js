@@ -77,19 +77,23 @@ export function mysticCanFinish(h, missing, wantStems) {
   return spare.length - sec >= need.pri && sec >= need.sec;
 }
 
-export function stepsHtml(h, missing, wantStems) {
+// heroes: {cls, name(c)} for a custom search; when the route hands the item to another class, every step says who does it.
+export function stepsHtml(h, missing, wantStems, heroes) {
   const out = [];
   const cps = h.checkpoints || [];
+  const who = h.route_class || [];
+  const switched = heroes && who.some((c) => c !== heroes.cls);
+  const as = (c) => (switched ? ` <b>as ${heroes.name(c)}</b>` : "");
   // Long steps say what to stop on (any count above 7): a player may pass the same item several times on the way,
   // and the roll of its main stat tells the right one apart.
   const hopeNote = (h.hope > 7 || h.route.some(([op]) => op === "C") || h.root_name !== h.name) && cps[0]
     ? ` <span class="note">(stop on ${stopOn(cps[0], null)})</span>` : "";
-  out.push(`Craft &amp; upgrade ${h.hope} ${slotPlural(h.slot, h.hope)}${hopeNote}`);
+  out.push(`Craft &amp; upgrade ${h.hope} ${slotPlural(h.slot, h.hope)}${switched ? as(heroes.cls) : ""}${hopeNote}`);
   h.route.forEach(([op, n], k) => {
     const last = k === h.route.length - 1;
     const cp = cps[k + 1];
     const note = n > 7 && !last && cp ? ` <span class="note">(stop on ${stopOn(cp, cps[k])})</span>` : "";
-    out.push((OP_TEXT[op] || (() => op))(n) + note);
+    out.push((OP_TEXT[op] || (() => op))(n) + (switched ? as(who[k]) : "") + note);
   });
   if (missing.length) {
     out.push(`Mystic: roll ${missing.map((m) => statName(m)).join(" or ")}`);
@@ -121,11 +125,14 @@ export function tooltipRows(lines) {
 // Reforge, Improve Legendary] prices as typed, f: good-roll floor %, n: recipes shown}. The same request on the same season and
 // mode always gives the same recipes, so a link (or a saved entry) only has to carry the request.
 export const DEFAULT_PRICES = ["0.75", "1", "5", "25"];
+export const DEFAULT_SWITCH = "1";
 
 export function requestHash(req, season, hc) {
   const e = encodeURIComponent;
   const w = req.w.map(([s, m]) => e(s) + (m === "" || m == null ? "" : "~" + e(m))).join(",");
-  return `#search?c=${req.c}&i=${req.i}&w=${w}&s=${season}&m=${hc ? "hc" : "sc"}&p=${req.p.map(e).join(",")}&f=${req.f}&n=${req.n}`;
+  // hero switching only appears in the link when it is on, so older links and saved searches stay the same
+  const x = req.x && req.x.length ? `&x=${req.x.join(",")}&xs=${e(req.xs)}` : "";
+  return `#search?c=${req.c}&i=${req.i}&w=${w}&s=${season}&m=${hc ? "hc" : "sc"}&p=${req.p.map(e).join(",")}&f=${req.f}&n=${req.n}${x}`;
 }
 
 // -> {req, season, hc} or null when the fragment is not a request link
@@ -140,12 +147,17 @@ export function parseRequestHash(hash) {
   const w = (q.get("w") || "").split(",").filter(Boolean).map((x) => { const [s, v = ""] = x.split("~"); return [d(s), d(v)]; });
   const p = (q.get("p") || "").split(",").map(d);
   return {
-    req: { c, i, w, p: p.length === 4 && p.every((x) => +x > 0) ? p : DEFAULT_PRICES.slice(), f: num("f") ?? 75, n: Math.max(1, num("n") || 1) },
+    req: {
+      c, i, w, p: p.length === 4 && p.every((x) => +x > 0) ? p : DEFAULT_PRICES.slice(), f: num("f") ?? 75, n: Math.max(1, num("n") || 1),
+      x: [...new Set((q.get("x") || "").split(",").filter((v) => /^[0-6]$/.test(v)).map(Number))].filter((v) => v !== c),
+      xs: num("xs") !== null && num("xs") >= 0 ? q.get("xs") : DEFAULT_SWITCH,
+    },
     season: Math.max(1, Math.round(num("s") || 40)), hc: q.get("m") === "hc",
   };
 }
 
-export const savedId = (req) => `${req.c}/${req.i}/${req.w.map(([s, m]) => s + "~" + m).join(",")}/${req.p.join(",")}/${req.f}`;
+export const savedId = (req) => `${req.c}/${req.i}/${req.w.map(([s, m]) => s + "~" + m).join(",")}/${req.p.join(",")}/${req.f}` +
+  (req.x && req.x.length ? `/${req.x.join(",")}~${req.xs}` : "");
 
 const SAVED_KEY = "d3r-saved";
 export function savedList() {

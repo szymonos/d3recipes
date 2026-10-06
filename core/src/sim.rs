@@ -159,6 +159,15 @@ struct BaseElig {
     list: Vec<usize>,
 }
 
+/// Does an affix with these item types fit the item? Skill-damage affixes used to check only {slot_hash, item.own}
+/// (chain[0]), never the item's full ancestor chain -- missed inheritance (Cloak's chain includes ChestArmor,
+/// and the real skill-affix records allow ChestArmor but not Cloak directly, so e.g. Fan of Knives silently
+/// never became a candidate on Cloak items). Fixed to use the SAME full-chain check as every other affix
+/// category, matching the Python fix exactly (one code path, no `a.skill` special case).
+fn fits(item: &Item, types: &[u32], wild: bool) -> bool {
+    types.iter().any(|&t| (wild && t == WILDCARD) || item.chain.binary_search(&t).is_ok() || item.sh == Some(t))
+}
+
 pub struct Sim {
     pub d: Rc<Data>,
     pub hero: usize,
@@ -169,11 +178,12 @@ pub struct Sim {
     /// primal weapons never roll a socket (set by `primalize` for weapons)
     ban_sockets: bool,
     base: HashMap<(usize, usize, bool), Rc<BaseElig>>,
+    twins: HashMap<usize, [usize; 7]>,
 }
 
 impl Sim {
     pub fn new(d: Rc<Data>, hero: usize, eligible: bool) -> Sim {
-        Sim { d, hero, eligible, ilvl: 70, quality: 9, cls: hero, ban_sockets: false, base: HashMap::new() }
+        Sim { d, hero, eligible, ilvl: 70, quality: 9, cls: hero, ban_sockets: false, base: HashMap::new(), twins: HashMap::new() }
     }
 
     fn set_class(&mut self, it: &Item) {
@@ -213,24 +223,48 @@ impl Sim {
         if a.cls != U && a.cls as usize != self.cls {
             return false;
         }
-        // skill-damage affixes used to check only {slot_hash, item.own}
-        // (chain[0]), never the item's full ancestor chain -- missed inheritance (Cloak's chain includes ChestArmor,
-        // and the real skill-affix records allow ChestArmor but not Cloak directly, so e.g. Fan of Knives silently
-        // never became a candidate on Cloak items). Fixed to use the SAME full-chain check as every other affix
-        // category, matching the Python fix exactly (one code path, no `a.skill` special case).
-        let in_chain = |t: u32| -> bool {
-            if wild && t == WILDCARD {
-                return true;
-            }
-            item.chain.binary_search(&t).is_ok() || item.sh == Some(t)
-        };
-        if !a.types.iter().any(|&t| in_chain(t)) {
+        if !fits(item, a.types.as_slice(), wild) {
             return false;
         }
         if !skip_quality && (a.q >> self.quality) & 1 == 0 {
             return false;
         }
         a.weight[self.cls] >= 1
+    }
+
+    /// For each class, the first class that rolls this item exactly like it (itself when none does). The class only
+    /// enters a Reforge or Improve Legendary through which affixes it may take and their weights, so two classes giving
+    /// the same weight to every affix the item can draw roll the same item (Barbarian and Crusader on most rings).
+    /// The affixes compared are the base picks' candidates (eligible_base without its class part) plus every member of
+    /// the item's fixed-slot groups, whatever its type, as resolve_slot's last pass takes them: a superset of what a
+    /// roll can meet, so classes are never merged by mistake. Not for Convert, which also weighs the target items by class.
+    pub fn class_twins(&mut self, item_idx: usize) -> [usize; 7] {
+        if let Some(t) = self.twins.get(&item_idx) {
+            return *t;
+        }
+        let item = &self.d.items[item_idx];
+        let groups: Vec<u32> = item.fixed.iter().copied().filter(|&g| g != U).collect();
+        let fit: Vec<usize> = (0..self.d.affixes.len())
+            .filter(|&ai| {
+                let a = &self.d.affixes[ai];
+                let base = !a.legacy_socket
+                    && a.lvl[0] <= self.ilvl
+                    && self.ilvl <= a.lvl[1]
+                    && fits(item, a.types.as_slice(), false)
+                    && (a.q >> self.quality) & 1 == 1;
+                base || (a.tier <= self.ilvl && groups.iter().any(|&g| a.g7c == g || a.g80 == g))
+            })
+            .collect();
+        let sig = |c: usize| -> Vec<u64> {
+            fit.iter().map(|&ai| { let a = &self.d.affixes[ai]; if a.cls != U && a.cls as usize != c { 0 } else { a.weight[c] } }).collect()
+        };
+        let sigs: Vec<Vec<u64>> = (0..7).map(sig).collect();
+        let mut t = [0usize; 7];
+        for c in 0..7 {
+            t[c] = (0..=c).find(|&b| sigs[b] == sigs[c]).unwrap();
+        }
+        self.twins.insert(item_idx, t);
+        t
     }
 
     #[inline]

@@ -157,6 +157,7 @@ function start() {
   $("app").hidden = false;
   $("cls").innerHTML = info.classes.map((c, i) => `<option value="${i}">${className(c)}</option>`).join("");
   $("cls").addEventListener("change", loadStems);
+  $("heroes").innerHTML = info.classes.map((c, i) => `<label class="small"><input type="checkbox" data-c="${i}"> ${className(c)}</label>`).join("");
   itemList = info.items;
   combo($("itemFind"), $("itemPick"), itemSource, "No matching item", pickItem);
   combo($("find"), $("pick"), statSource, "No matching stat on this item", (stem) => { wants.push({ stem, min: "" }); renderChips(); });
@@ -246,6 +247,9 @@ function readRequest() {
   return {
     c: +$("cls").value, i: pickedItem.id, w: wants.map((w) => [w.stem, String(w.min)]),
     p: ["cc", "ch", "cr", "cp"].map((id) => $(id).value), f: num("floor"), n: Math.max(1, Math.round(+$("top").value || 1)),
+    // heroes of other classes allowed to do cube steps, and the cost of each hand-over (the item's own class never counts)
+    x: [...$("heroes").querySelectorAll("input:checked")].map((el) => +el.dataset.c).filter((c) => c !== +$("cls").value),
+    xs: $("cs").value,
   };
 }
 const contextNow = () => ({ season: Math.max(1, Math.round(+$("season").value || 40)), hc: $("hc").value === "1" });
@@ -258,6 +262,7 @@ function baseQuery(req, item, season, hc) {
   // search the most) until it gets a control of its own. set_roots: a set item's recipe may start from any piece of its set.
   return {
     class: req.c, slots: [item.slot], items: [item.id], season, hardcore: hc,
+    switch: req.x || [], cost_switch: (req.x || []).length ? Math.max(0, Math.round((+req.xs || 0) * 100)) : 0,
     eligible: true, n0: 0, maxpos: 4096, maxsteps: 1000, max_primalize: 255, max_convert: 2, set_roots: true,
     cost_h: cost(ch), cost_r: cost(cr), cost_p: cost(cp), cost_c: cost(cc), top: 4, min_frac: Math.min(1, req.f / 100),
     wants: req.w.map(([stem, m]) => {
@@ -391,6 +396,8 @@ async function applyLink(parsed) {
   pickedItem = it;
   renderItemChips();
   ["cc", "ch", "cr", "cp"].forEach((id, k) => { $(id).value = req.p[k]; });
+  $("heroes").querySelectorAll("input").forEach((el) => { el.checked = (req.x || []).includes(+el.dataset.c); });
+  $("cs").value = req.xs;
   $("floor").value = String(req.f);
   $("top").value = String(req.n);
   wants = req.w.map(([stem, min]) => ({ stem, min }));
@@ -482,7 +489,7 @@ const TIER_OF = { primal: "primal", crafted: "crafted", ancient: "ancient", norm
 
 
 
-function hitHtml(h, tier, snap, item) {
+function hitHtml(h, tier, snap, item, cls) {
   const wantStems = new Set(snap);
   const matchedStems = new Set(h.matched.map((i) => snap[i]));
   const missing = snap.filter((_, i) => !h.matched.includes(i));
@@ -511,7 +518,7 @@ function hitHtml(h, tier, snap, item) {
   const mats = matsHtml(materials(h));
   const craftedNote = tier === "crafted" ? `<div class="small">Improve Legendary primals: only one can be worn per character.</div>` : "";
   return `<article class="hit"><div class="head"><span class="tag ${tagCls}">${tagText}</span><span class="aff">${parts.join(", ")}</span></div>
-    ${stepsHtml(h, missing, wantStems)}${craftedNote}<div class="mats">${mats}</div>
+    ${stepsHtml(h, missing, wantStems, { cls, name: (c) => className(info.classes[c]) })}${craftedNote}<div class="mats">${mats}</div>
     <details class="full"><summary>Full tooltip</summary><div class="lines">${lines}</div></details></article>`;
 }
 
@@ -543,7 +550,7 @@ function resultsHtml(run, final) {
     for (const h of pickHits(t.key, r, snap, run.show)) {
       if (shown.some((s) => s.matched >= h.matched.length && s.cost <= h.cost)) continue;
       shown.push({ matched: h.matched.length, cost: h.cost });
-      body += hitHtml(h, TIER_OF[t.key], snap, run.item);
+      body += hitHtml(h, TIER_OF[t.key], snap, run.item, run.base.class);
     }
   }
   if (shown.length) html += `<section class="card">${body}</section>`;

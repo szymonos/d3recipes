@@ -138,6 +138,14 @@ pub struct Query {
     /// nothing found later is cheaper than that route
     #[serde(default)]
     pub end_on_near: bool,
+    /// other hero classes that may do the cube steps after the Hope of Cain root. The item keeps its seed from hero to
+    /// hero; the hero's class only changes the affix weights (on items of no class) and costs a Reforge one extra draw
+    /// on another class's item, so a step can be handed to whichever hero rolls what is wanted
+    #[serde(default)]
+    pub switch: Vec<usize>,
+    /// cost of handing the item to a hero of another class (0 = free); a small one keeps routes from switching for nothing
+    #[serde(default)]
+    pub cost_switch: u64,
     #[serde(default = "d_top")]
     pub top: usize,
     /// stop when the next node would cost more than this (0 = unlimited)
@@ -176,6 +184,8 @@ pub struct Hit {
     pub hope: u32,
     /// grouped route below the root: [["R", 8], ["P", 1], ...]
     pub route: Vec<(char, u32)>,
+    /// the hero class doing each group of `route` (all the query's class unless `switch` allowed others)
+    pub route_class: Vec<usize>,
     pub item: u32,
     pub name: String,
     /// the item Hope of Cain itself lands on — usually equal to `name`, but can differ once a Convert Set Item
@@ -231,6 +241,7 @@ struct NodeRec {
     depth: u16,
     parent: u32,
     op: u8, // b'H' root, b'R', b'P', b'C' (Convert)
+    cls: u8, // the hero class that did this step (the root: the query's class)
     slot: u16,
     n: u16,
 }
@@ -259,6 +270,8 @@ pub struct Search {
     d: Rc<Data>,
     sim: Sim,
     q: Query,
+    /// classes that may do a step: the query's own first, then `switch`
+    heroes: Vec<usize>,
     quality: String,
     wants_lc: Vec<(Vec<String>, Vec<String>, Option<f64>)>,
     min_match: usize,
@@ -290,7 +303,14 @@ impl Search {
             .map(|w| (w.alts.iter().map(|a| a.to_lowercase()).collect(), w.fam.iter().map(|a| a.to_lowercase()).collect(), w.min))
             .collect();
         let min_match = if q.min_match == 0 { wants_lc.len() } else { q.min_match.min(wants_lc.len()) };
+        let mut heroes = vec![q.class];
+        for &c in &q.switch {
+            if c < 7 && !heroes.contains(&c) {
+                heroes.push(c);
+            }
+        }
         let mut s = Search {
+            heroes,
             quality: q.quality.clone(),
             d,
             sim,
@@ -401,7 +421,7 @@ impl Search {
             let q = if r.primal { Q::Primal } else if r.ancient { Q::Ancient } else { Q::Normal };
             let cost = (r.n - self.q.n0) as u64 * self.q.cost_h;
             let idx = self.nodes.len() as u32;
-            self.nodes.push(NodeRec { item: r.item as u32, seed: r.seed, q, pc: 0, cc: 0, depth: 0, parent: u32::MAX, op: b'H', slot: name_idx, n: r.n as u16 });
+            self.nodes.push(NodeRec { item: r.item as u32, seed: r.seed, q, pc: 0, cc: 0, depth: 0, parent: u32::MAX, op: b'H', cls: self.q.class as u8, slot: name_idx, n: r.n as u16 });
             self.root_x0.insert(idx, r.x0);
             if self.need_lines(q) {
                 let aff = self.sim.drop_item(r.item, r.x0, r.ancient || r.primal);
@@ -506,23 +526,27 @@ impl Search {
         m
     }
 
-    fn route_of(&self, mut idx: u32) -> (Vec<(char, u32)>, u16, u16, usize) {
-        let mut ops: Vec<u8> = Vec::new();
+    fn route_of(&self, mut idx: u32) -> (Vec<(char, u32)>, Vec<usize>, u16, u16, usize) {
+        let mut ops: Vec<(u8, u8)> = Vec::new();
         loop {
             let n = &self.nodes[idx as usize];
             if n.parent == u32::MAX {
                 ops.reverse();
                 let mut route: Vec<(char, u32)> = Vec::new();
-                for o in ops {
+                let mut who: Vec<usize> = Vec::new();
+                for (o, cls) in ops {
                     let c = o as char;
                     match route.last_mut() {
-                        Some(l) if l.0 == c => l.1 += 1,
-                        _ => route.push((c, 1)),
+                        Some(l) if l.0 == c && who.last() == Some(&(cls as usize)) => l.1 += 1,
+                        _ => {
+                            route.push((c, 1));
+                            who.push(cls as usize);
+                        }
                     }
                 }
-                return (route, n.slot, n.n, n.item as usize);
+                return (route, who, n.slot, n.n, n.item as usize);
             }
-            ops.push(n.op);
+            ops.push((n.op, n.cls));
             idx = n.parent;
         }
     }
@@ -556,7 +580,7 @@ impl Search {
             }
             _ => Vec::new(),
         };
-        let (route, slot, n, root_item) = self.route_of(idx);
+        let (route, route_class, slot, n, root_item) = self.route_of(idx);
         let node = &self.nodes[idx as usize];
         let hit = Hit {
             cost,
@@ -564,6 +588,7 @@ impl Search {
             slot: self.slot_names[slot as usize].clone(),
             hope: n as u32 - self.q.n0,
             route,
+            route_class,
             item: self.d.items[node.item as usize].id,
             name: self.d.items[node.item as usize].name.clone(),
             root_name: self.d.items[root_item].name.clone(),
@@ -610,51 +635,79 @@ impl Search {
         if depth as u32 >= self.q.maxsteps {
             return;
         }
-        let (slot, n0) = {
+        let (slot, n0, cur) = {
             let n = &self.nodes[idx as usize];
-            (n.slot, n.n)
+            (n.slot, n.n, n.cls as usize)
         };
+        // The heroes that may do the next step, the one holding the item first: a hero whose step gives the same item
+        // as an earlier one is skipped, so staying put wins every tie. A class item rolls with its own class's weights
+        // whoever transmutes it, and a hero of another class only adds one draw to a Reforge; an item of no class rolls
+        // with the hero's weights.
+        let icls = self.d.items[item].icls;
+        let order: Vec<usize> = std::iter::once(cur).chain(self.heroes.iter().copied().filter(|&c| c != cur)).collect();
+        let distinct = |key: &dyn Fn(usize) -> (usize, bool)| -> Vec<usize> {
+            let mut keys = Vec::new();
+            order.iter().copied().filter(|&c| !keys.contains(&key(c)) && { keys.push(key(c)); true }).collect()
+        };
+        // and classes that give every affix of the item the same weight roll it the same (Sim::class_twins)
+        let twin = self.sim.class_twins(item);
+        let reforgers = distinct(&|c| (icls.unwrap_or(twin[c]), icls.map_or(false, |ic| ic != c)));
+        let improvers = distinct(&|c| (icls.unwrap_or(twin[c]), false));
+        let cs = self.q.cost_switch;
+        let hand = move |c: usize| if c == cur { 0 } else { cs };
         // Reforge
-        let g = self.sim.reforge(item, seed);
-        let cq = if g.primal { Q::Primal } else if g.ancient { Q::Ancient } else { Q::Normal };
-        let ccost = cost + self.q.cost_r.max(1);
-        if self.seen.insert(self.key(item as u32, g.child_seed, pc, cc)) {
-            let cidx = self.nodes.len() as u32;
-            self.nodes.push(NodeRec { item: item as u32, seed: g.child_seed, q: cq, pc, cc, depth: depth + 1, parent: idx, op: b'R', slot, n: n0 });
-            if self.need_lines(cq) {
-                let raw = if g.primal { self.sim.values_max(item, &g.affixes) } else { self.sim.values(item, g.child_seed, &g.affixes) };
-                self.register(cidx, ccost, cq, item, &g.affixes, raw);
+        for c in reforgers {
+            self.sim.hero = c;
+            let g = self.sim.reforge(item, seed);
+            let cq = if g.primal { Q::Primal } else if g.ancient { Q::Ancient } else { Q::Normal };
+            let ccost = cost + self.q.cost_r.max(1) + hand(c);
+            if self.seen.insert(self.key(item as u32, g.child_seed, pc, cc)) {
+                let cidx = self.nodes.len() as u32;
+                self.nodes.push(NodeRec { item: item as u32, seed: g.child_seed, q: cq, pc, cc, depth: depth + 1, parent: idx, op: b'R', cls: c as u8, slot, n: n0 });
+                if self.need_lines(cq) {
+                    let raw = if g.primal { self.sim.values_max(item, &g.affixes) } else { self.sim.values(item, g.child_seed, &g.affixes) };
+                    self.register(cidx, ccost, cq, item, &g.affixes, raw);
+                }
+                self.push(ccost, cidx);
             }
-            self.push(ccost, cidx);
         }
         // Improve Legendary
         if (pc as u32) < self.q.max_primalize {
-            let (aff, child) = self.sim.primalize(item, seed);
-            let pcost = cost + self.q.cost_p.max(1);
-            if self.seen.insert(self.key(item as u32, child, pc + 1, cc)) {
-                let cidx = self.nodes.len() as u32;
-                self.nodes.push(NodeRec { item: item as u32, seed: child, q: Q::Crafted, pc: pc + 1, cc, depth: depth + 1, parent: idx, op: b'P', slot, n: n0 });
-                if self.need_lines(Q::Crafted) {
-                    let raw = self.sim.values_max(item, &aff);
-                    self.register(cidx, pcost, Q::Crafted, item, &aff, raw);
+            for c in improvers {
+                self.sim.hero = c;
+                let (aff, child) = self.sim.primalize(item, seed);
+                let pcost = cost + self.q.cost_p.max(1) + hand(c);
+                if self.seen.insert(self.key(item as u32, child, pc + 1, cc)) {
+                    let cidx = self.nodes.len() as u32;
+                    self.nodes.push(NodeRec { item: item as u32, seed: child, q: Q::Crafted, pc: pc + 1, cc, depth: depth + 1, parent: idx, op: b'P', cls: c as u8, slot, n: n0 });
+                    if self.need_lines(Q::Crafted) {
+                        let raw = self.sim.values_max(item, &aff);
+                        self.register(cidx, pcost, Q::Crafted, item, &aff, raw);
+                    }
+                    self.push(pcost, cidx);
                 }
-                self.push(pcost, cidx);
             }
         }
-        // Convert Set Item: a DIFFERENT item id, always non-Ancient, unavailable on <= 2-piece sets.
+        // Convert Set Item: a DIFFERENT item id, always non-Ancient, unavailable on <= 2-piece sets. The target is picked
+        // with the hero's weights, so every hero is tried; one landing on the same item and seed is dropped by `seen`.
         if (cc as u32) < self.q.max_convert && self.sim.set_pool(item).len() > 2 {
-            let g = self.sim.convert(item, seed);
-            let vcost = cost + self.q.cost_c.max(1);
-            if self.seen.insert(self.key(g.target as u32, g.child_seed, pc, cc + 1)) {
-                let cidx = self.nodes.len() as u32;
-                self.nodes.push(NodeRec { item: g.target as u32, seed: g.child_seed, q: Q::Normal, pc, cc: cc + 1, depth: depth + 1, parent: idx, op: b'C', slot, n: n0 });
-                if self.need_lines(Q::Normal) {
-                    let raw = self.sim.values(g.target, g.child_seed, &g.affixes);
-                    self.register(cidx, vcost, Q::Normal, g.target, &g.affixes, raw);
+            for c in order.clone() {
+                self.sim.hero = c;
+                let g = self.sim.convert(item, seed);
+                let vcost = cost + self.q.cost_c.max(1) + hand(c);
+                if self.seen.insert(self.key(g.target as u32, g.child_seed, pc, cc + 1)) {
+                    let cidx = self.nodes.len() as u32;
+                    self.nodes.push(NodeRec { item: g.target as u32, seed: g.child_seed, q: Q::Normal, pc, cc: cc + 1, depth: depth + 1, parent: idx, op: b'C', cls: c as u8, slot, n: n0 });
+                    if self.need_lines(Q::Normal) {
+                        let raw = self.sim.values(g.target, g.child_seed, &g.affixes);
+                        self.register(cidx, vcost, Q::Normal, g.target, &g.affixes, raw);
+                    }
+                    self.push(vcost, cidx);
                 }
-                self.push(vcost, cidx);
             }
         }
+        // Hope of Cain roots are always rolled by the query's own hero
+        self.sim.hero = self.q.class;
     }
 
     /// Process up to `max_nodes` queue entries; returns true when the search is finished (target found with top results, limit reached, or exhausted).
@@ -718,10 +771,11 @@ impl Search {
         path.reverse();
         let mut states: Vec<Checkpoint> = Vec::with_capacity(path.len());
         for k in 0..path.len() {
-            let (item, seed, q, op) = {
+            let (item, seed, q, op, cls) = {
                 let n = &self.nodes[path[k] as usize];
-                (n.item as usize, n.seed, n.q, n.op)
+                (n.item as usize, n.seed, n.q, n.op, n.cls as usize)
             };
+            self.sim.hero = cls;
             let (aff, raw) = if k == 0 {
                 let x0 = self.root_x0[&path[k]];
                 let aff = self.sim.drop_item(item, x0, q != Q::Normal);
@@ -754,6 +808,7 @@ impl Search {
             let lines = self.make_lines(&aff, raw, mx);
             states.push(Checkpoint { name: self.d.items[item].name.clone(), quality: q.name().to_string(), lines });
         }
+        self.sim.hero = self.q.class;
         states
     }
 
