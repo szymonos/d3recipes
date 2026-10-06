@@ -95,3 +95,22 @@ fn played_switching_route_is_found() {
     assert_eq!(str_after, vec![452.0, 453.0, 478.0, 488.0, 596.0, 433.0, 463.0, 650.0]);
     assert_eq!(h.quality, "primal");
 }
+
+/// On an item of no class every class reaches the same seed (the class changes which affixes are picked, not how many draws
+/// they take) with different lines, so the search must register each hero's roll of a state it expands only once.
+#[test]
+fn another_class_rolls_the_same_seed_into_other_lines() {
+    use d3cube::sim::Sim;
+    let d = data();
+    let it = d.items.iter().position(|i| i.name == "Stone Gauntlets").unwrap();
+    let (mut dh, mut barb) = (Sim::new(d.clone(), 0, true), Sim::new(d.clone(), 1, true));
+    let differ = (0..100u32)
+        .filter(|&k| {
+            let seed = k.wrapping_mul(2_654_435_761).wrapping_add(12_345);
+            let (a, b) = (dh.reforge(it, seed), barb.reforge(it, seed));
+            assert_eq!(a.child_seed, b.child_seed);
+            a.affixes != b.affixes
+        })
+        .count();
+    assert!(differ > 50, "{differ} of 100");
+}

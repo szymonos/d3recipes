@@ -201,7 +201,8 @@ pub struct Hit {
     /// on a recipe one wanted stat short: the stems of the spare lines the Mystic may swap for that stat (the roll rules: affix
     /// groups, exclusion keys, budget; the same kind, from the data); never empty on a `near` hit asking for stat families
     pub mystic: Vec<String>,
-    /// the class of the hero who enchants at the Mystic: the query's own when its class can roll the stat, else one from `switch`
+    /// the class of the hero who enchants at the Mystic: the one holding the item when its class can roll the stat, else another
+    /// allowed one (the hand-off counted in `cost`)
     pub mystic_class: usize,
     /// every step of the route, root first (only with `Query::trail`)
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -490,7 +491,8 @@ impl Search {
     /// `Query::mystic_finish`: the stats a result still lacks (the Mystic stat, and a wanted stat when `min_match` allows one short) must
     /// be at most one, and the Mystic must be able to add it: a line that is not wanted, not kept, not the weapon damage range and of the
     /// same kind can legally be replaced by it.
-    fn mystic_can_finish(&mut self, item: usize, aff: &[usize], lines: &[LineOut], matched: &[usize]) -> bool {
+    /// The class that enchants, tried as for a near result: `holder` (the hero holding the item) first, then the others allowed.
+    fn mystic_can_finish(&mut self, item: usize, aff: &[usize], lines: &[LineOut], matched: &[usize], holder: usize) -> Option<usize> {
         let mut missing: Vec<Vec<String>> =
             (0..self.wants_lc.len()).filter(|w| !matched.contains(w)).map(|w| self.wants_lc[w].1.clone()).collect();
         let lc = |v: &[String]| v.iter().map(|s| s.to_lowercase()).collect::<Vec<_>>();
@@ -499,9 +501,9 @@ impl Search {
             missing.push(mystic);
         }
         match missing.len() {
-            0 => return true,
+            0 => return Some(holder),
             1 => {}
-            _ => return false,
+            _ => return None,
         }
         let keep = lc(&self.q.keep);
         let spare = |stem: &str| {
@@ -509,7 +511,8 @@ impl Search {
             !self.wants_lc.iter().any(|w| w.1.contains(&s)) && !keep.contains(&s) && !RANGE_STEMS.iter().any(|r| r.to_lowercase() == s) && s != "indestructible"
         };
         let ok: Vec<bool> = aff.iter().map(|&a| spare(&self.d.affixes[a].stem)).collect();
-        self.sim.mystic_swaps(item, aff, &missing[0], true, self.q.class).into_iter().any(|p| ok[p])
+        let heroes: Vec<usize> = std::iter::once(holder).chain(self.heroes.iter().copied().filter(|&c| c != holder)).collect();
+        heroes.into_iter().find(|&c| self.sim.mystic_swaps(item, aff, &missing[0], true, c).into_iter().any(|p| ok[p]))
     }
 
     fn matched(&self, lines: &[LineOut]) -> Vec<usize> {
@@ -554,7 +557,7 @@ impl Search {
     }
 
     /// record a tooltip if it satisfies the target, is one want short, or is a notable natural primal / ancient
-    fn register(&mut self, idx: u32, cost: u64, q: Q, item: usize, aff: &[usize], raw: Vec<Line>) {
+    fn register(&mut self, idx: u32, mut cost: u64, q: Q, item: usize, aff: &[usize], raw: Vec<Line>) {
         if q == Q::Crafted && !self.q.end_on_primalize {
             return;
         }
@@ -567,19 +570,27 @@ impl Search {
         let matched = self.matched(&lines);
         let qual_ok = self.quality_ok(q);
         let nw = self.wants_lc.len();
-        let is_full = qual_ok && matched.len() >= self.min_match && (!self.q.mystic_finish || self.mystic_can_finish(item, aff, &lines, &matched));
+        let holder = self.nodes[idx as usize].cls as usize;
+        // with `mystic_finish`, a full result needs a hero who can enchant what it lacks; handing it over costs a switch
+        let finisher = if qual_ok && matched.len() >= self.min_match && self.q.mystic_finish { self.mystic_can_finish(item, aff, &lines, &matched, holder) } else { Some(holder) };
+        let is_full = qual_ok && matched.len() >= self.min_match && finisher.is_some();
+        if is_full && finisher != Some(holder) {
+            cost += self.q.cost_switch;
+        }
         let mut is_near = qual_ok && nw > 0 && matched.len() + 1 == self.min_match;
         // a recipe one stat short: the spare lines (not wanted, not the weapon damage range) the Mystic may legally swap for the
-        // missing stat, of the same kind, at the first hero whose class can roll it (the query's own, then `switch`). With none,
-        // it is no recipe one short at all, so it cannot end the search (`end_on_near`) ahead of one the Mystic can finish.
-        let (mut mystic, mut mystic_class) = (Vec::new(), self.q.class);
+        // missing stat, of the same kind, at the first hero whose class can roll it: the one holding the item, then the others
+        // allowed, a hand-off costing `cost_switch` like any other. With none, it is no recipe one short at all, so it cannot end
+        // the search (`end_on_near`) ahead of one the Mystic can finish.
+        let (mut mystic, mut mystic_class) = (Vec::new(), holder);
         if let Some(w) = (0..nw).find(|w| is_near && !matched.contains(w) && !self.wants_lc[*w].1.is_empty()) {
             let fams = self.wants_lc[w].1.clone();
             let spare = |stem: &String| {
                 let s = stem.to_lowercase();
                 !self.wants_lc.iter().any(|w| w.1.contains(&s)) && !RANGE_STEMS.iter().any(|r| r.to_lowercase() == s) && s != "indestructible"
             };
-            for c in self.heroes.clone() {
+            let heroes: Vec<usize> = std::iter::once(holder).chain(self.heroes.iter().copied().filter(|&c| c != holder)).collect();
+            for c in heroes {
                 let lines: Vec<String> =
                     self.sim.mystic_swaps(item, aff, &fams, true, c).into_iter().map(|p| self.d.affixes[aff[p]].stem.clone()).filter(|s| spare(s)).collect();
                 if !lines.is_empty() {
@@ -588,6 +599,9 @@ impl Search {
                 }
             }
             is_near = !mystic.is_empty();
+            if mystic_class != holder {
+                cost += self.q.cost_switch;
+            }
         }
         let notable_min = self.min_match.saturating_sub(1).max(1);
         let is_notable = !is_full && !is_near && (q == Q::Primal || q == Q::Ancient) && nw > 0 && matched.len() >= notable_min;
@@ -670,54 +684,66 @@ impl Search {
         let improvers = distinct(&|c| (icls.unwrap_or(twin[c]), false));
         let cs = self.q.cost_switch;
         let hand = move |c: usize| if c == cur { 0 } else { cs };
+        // A state another hero reached first is expanded once (the same item and seed have the same future), but a later hero's
+        // roll still registers its tooltip: on an item of no class every class reaches the same seed (the class changes which
+        // affixes are picked, not how many draws they take) with different lines.
         // Reforge
-        for c in reforgers {
+        for (k, c) in reforgers.into_iter().enumerate() {
             self.sim.hero = c;
             let g = self.sim.reforge(item, seed);
             let cq = if g.primal { Q::Primal } else if g.ancient { Q::Ancient } else { Q::Normal };
             let ccost = cost + self.q.cost_r.max(1) + hand(c);
-            if self.seen.insert(self.key(item as u32, g.child_seed, pc, cc)) {
+            let new = self.seen.insert(self.key(item as u32, g.child_seed, pc, cc));
+            if new || (k > 0 && self.need_lines(cq)) {
                 let cidx = self.nodes.len() as u32;
                 self.nodes.push(NodeRec { item: item as u32, seed: g.child_seed, q: cq, pc, cc, depth: depth + 1, parent: idx, op: b'R', cls: c as u8, slot, n: n0 });
                 if self.need_lines(cq) {
                     let raw = if g.primal { self.sim.values_max(item, &g.affixes) } else { self.sim.values(item, g.child_seed, &g.affixes) };
                     self.register(cidx, ccost, cq, item, &g.affixes, raw);
                 }
-                self.push(ccost, cidx);
+                if new {
+                    self.push(ccost, cidx);
+                }
             }
         }
         // Improve Legendary
         if (pc as u32) < self.q.max_primalize {
-            for c in improvers {
+            for (k, c) in improvers.into_iter().enumerate() {
                 self.sim.hero = c;
                 let (aff, child) = self.sim.primalize(item, seed);
                 let pcost = cost + self.q.cost_p.max(1) + hand(c);
-                if self.seen.insert(self.key(item as u32, child, pc + 1, cc)) {
+                let new = self.seen.insert(self.key(item as u32, child, pc + 1, cc));
+                if new || (k > 0 && self.need_lines(Q::Crafted)) {
                     let cidx = self.nodes.len() as u32;
                     self.nodes.push(NodeRec { item: item as u32, seed: child, q: Q::Crafted, pc: pc + 1, cc, depth: depth + 1, parent: idx, op: b'P', cls: c as u8, slot, n: n0 });
                     if self.need_lines(Q::Crafted) {
                         let raw = self.sim.values_max(item, &aff);
                         self.register(cidx, pcost, Q::Crafted, item, &aff, raw);
                     }
-                    self.push(pcost, cidx);
+                    if new {
+                        self.push(pcost, cidx);
+                    }
                 }
             }
         }
         // Convert Set Item: a DIFFERENT item id, always non-Ancient, unavailable on <= 2-piece sets. The target is picked
         // with the hero's weights, so every hero is tried; one landing on the same item and seed is dropped by `seen`.
         if (cc as u32) < self.q.max_convert && self.sim.set_pool(item).len() > 2 {
-            for c in order.clone() {
+            for (k, c) in order.clone().into_iter().enumerate() {
                 self.sim.hero = c;
                 let g = self.sim.convert(item, seed);
                 let vcost = cost + self.q.cost_c.max(1) + hand(c);
-                if self.seen.insert(self.key(g.target as u32, g.child_seed, pc, cc + 1)) {
+                let new = self.seen.insert(self.key(g.target as u32, g.child_seed, pc, cc + 1));
+                if new || (k > 0 && self.need_lines(Q::Normal)) {
                     let cidx = self.nodes.len() as u32;
                     self.nodes.push(NodeRec { item: g.target as u32, seed: g.child_seed, q: Q::Normal, pc, cc: cc + 1, depth: depth + 1, parent: idx, op: b'C', cls: c as u8, slot, n: n0 });
                     if self.need_lines(Q::Normal) {
                         let raw = self.sim.values(g.target, g.child_seed, &g.affixes);
                         self.register(cidx, vcost, Q::Normal, g.target, &g.affixes, raw);
                     }
-                    self.push(vcost, cidx);
+                    if new {
+                        self.push(vcost, cidx);
+                    }
                 }
             }
         }

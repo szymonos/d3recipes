@@ -39,20 +39,39 @@ fn an_impossible_mystic_does_not_end_the_search() {
 fn necklace(switch: &[usize]) -> Results {
     run(serde_json::json!({
         "class": 6, "slots": ["Amulet"], "items": [1187653737u32], "season": 40, "quality": "primal", "max_primalize": 2, "maxsteps": 1000,
-        "cost_h": 100, "cost_r": 500, "cost_p": 2500, "cost_c": 75, "top": 4, "min_match": 3, "cost_limit": 13600,
+        "cost_h": 100, "cost_r": 500, "cost_p": 2500, "cost_c": 75, "top": 4, "min_match": 3, "cost_limit": 13700, "cost_switch": 100,
         "wants": [{"fam": ["CriticalChance"]}, {"fam": ["CriticalD"]}, {"fam": ["DamageBonusLightning"]}], "switch": switch
     }))
 }
 
 /// Squirt's Necklace with Critical Hit Chance, Critical Hit Damage and Lightning damage from a Necromancer: the primal lands CHC
 /// and CHD, and the Mystic swaps the main stat (or the socket) for Lightning damage. A Necromancer never rolls Lightning damage, so
-/// that needs another hero at the Mystic: with none allowed there is no such result.
+/// that needs another hero at the Mystic, and handing it over costs one switch: with none allowed there is no such result.
 #[test]
 fn the_mystic_offers_what_the_enchanting_class_can_roll() {
-    assert!(necklace(&[]).near.iter().all(|h| h.cost != 13500), "a Necromancer enchanting Lightning damage");
+    assert!(necklace(&[]).near.iter().all(|h| h.hope != 5 || h.route != vec![('R', 4), ('P', 1), ('R', 5), ('P', 1), ('R', 7)]), "a Necromancer enchanting Lightning damage");
     let r = necklace(&[2]);
-    let h = r.near.iter().find(|h| h.cost == 13500).expect("the 135 route");
+    let h = r.near.iter().find(|h| h.hope == 5 && h.route == vec![('R', 4), ('P', 1), ('R', 5), ('P', 1), ('R', 7)]).expect("the 135 route");
+    assert_eq!(h.cost, 13500 + 100, "the hand-off to the Wizard is not counted");
     println!("{:?} mystic {:?} as {}", h.route, h.mystic, h.mystic_class);
     assert!(h.mystic.contains(&"Int".to_string()));
     assert_eq!(h.mystic_class, 2);
+}
+
+/// The same with `mystic_finish` (the prepared lists' rule: a full result must leave the Mystic able to add its Mystic stat):
+/// the Necromancer's necklace counts only with a hero allowed who can enchant Lightning damage, and the hand-off costs a switch.
+#[test]
+fn mystic_finish_uses_the_allowed_heroes() {
+    let full = |switch: &[usize]| {
+        run(serde_json::json!({
+            "class": 6, "slots": ["Amulet"], "items": [1187653737u32], "season": 40, "quality": "primal", "max_primalize": 2, "maxsteps": 1000,
+            "cost_h": 100, "cost_r": 500, "cost_p": 2500, "cost_c": 75, "top": 4, "min_match": 2, "cost_limit": 13700, "cost_switch": 100,
+            "wants": [{"fam": ["CriticalChance"]}, {"fam": ["CriticalD"]}], "mystic_finish": true, "mystic": ["DamageBonusLightning"], "switch": switch
+        }))
+        .full
+        .into_iter()
+        .find(|h| h.hope == 5 && h.route == vec![('R', 4), ('P', 1), ('R', 5), ('P', 1), ('R', 7)])
+    };
+    assert!(full(&[]).is_none(), "a Necromancer enchanting Lightning damage");
+    assert_eq!(full(&[2]).expect("the 135 route with a Wizard").cost, 13500 + 100);
 }
